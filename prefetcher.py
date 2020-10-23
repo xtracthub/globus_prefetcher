@@ -8,7 +8,7 @@ from random import randint
 import os
 import csv
 import datetime
-from get_dir_size import get_data_dir_size
+from size_getter import get_size
 import threading
 import argparse
 
@@ -31,7 +31,7 @@ class GlobusPoller():
 
         self.file_counter = randint(100000, 999999)
 
-        max_gb = 0.05
+        max_gb = 10
 
         self.last_batch = False
         bytes_in_gb = 1024 * 1024 * 1024
@@ -94,14 +94,18 @@ class GlobusPoller():
 
     def get_size(self):
         # bytes    #kilo  #mega
-        num_mbytes = get_data_dir_size() / 1024 / 1024
+        x0 = time.time()
+        num_bytes = get_size() #/ 1024 / 1024
+        x1 = time.time()
+
+        print(f"Time to get folder size: {x1-x0}") 
         cur_time = datetime.datetime.now()
         cur_read_time = cur_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        self.cur_data_folder_size = num_mbytes * 1024 * 1024  # Convert back to bytes.
+        self.cur_data_folder_size = num_bytes # * 1024 * 1024  # Convert back to bytes.
         with open("folder_size.csv", 'a') as f:
             writer = csv.writer(f)
-            writer.writerow([cur_read_time, num_mbytes])
+            writer.writerow([cur_read_time, num_bytes])
 
         print(f"************** SIZE IN MB: {self.cur_data_folder_size} ***********************")
 
@@ -136,7 +140,7 @@ class GlobusPoller():
                                      'Id': item["MessageId"]})
             if len(del_list) > 0: 
                 response = self.sqs_client.delete_message_batch(QueueUrl=self.crawl_queue_url, Entries=del_list)
-                print(response)              
+                # print(response)              
         else:
             self.last_batch = True
             return 
@@ -147,7 +151,7 @@ class GlobusPoller():
         need_more_families = True
 
         while True:
-            print(f"Need more families: {need_more_families}")
+            # print(f"Need more families: {need_more_families}")
             if need_more_families:
                 total_size = self.get_new_families()
 
@@ -162,9 +166,16 @@ class GlobusPoller():
 
             print(f"[Tyler 1] Folder size: {self.cur_data_folder_size}")
             print(f"[Tyler 2] Maximum bytes: {self.max_bytes}")
+
+            if self.cur_data_folder_size >= self.max_bytes:
+                print(f"Prefetch folder full! Sleeping for 5 seconds, then continuing")
+                time.sleep(5)
+                need_more_families = False 
+                continue
+
             while self.cur_data_folder_size < self.max_bytes and not self.local_transfer_queue.empty():
-                print("INSIDE THIS LOOP")
-                print(f"Update queue size: {self.local_transfer_queue.qsize()}")
+                # print("INSIDE THIS LOOP")
+                # print(f"Update queue size: {self.local_transfer_queue.qsize()}")
                 need_more_families = True
 
                 cur_fam_id = self.local_transfer_queue.get()
@@ -212,7 +223,7 @@ class GlobusPoller():
                             file_obj['path'] = f"{fam_dir}/{file_name}"
 
                 transfer_result = self.tc.submit_transfer(tdata)
-                print(f"Transfer result: {transfer_result}")
+                # print(f"Transfer result: {transfer_result}")
                 gl_task_id = transfer_result['task_id']
                 self.transfer_check_queue.put(gl_task_id)
                 
@@ -228,13 +239,13 @@ class GlobusPoller():
             while not self.transfer_check_queue.empty():
                 gl_tid = self.transfer_check_queue.get()
                 res = self.tc.get_task(gl_tid)
-                print(res)
+                # print(res)
                 if res['status'] != "SUCCEEDED":
                     gl_task_tmp_ls.append(gl_tid)
                 else:
                     # TODO: Get the families associated with the transfer task. 
                     fids = self.transfer_map[gl_tid]
-                    print(f"These are the fids: {fids}")
+                    # print(f"These are the fids: {fids}")
 
                     insertables_batch = []
                     insertables = []
@@ -243,7 +254,7 @@ class GlobusPoller():
                     for fid in fids:
                         self.file_counter += 1
 
-                        print(f"Family: {self.family_map[fid]}")
+                        # print(f"Family: {self.family_map[fid]}")
                         family_object = {"Id": str(self.file_counter), "MessageBody": json.dumps(self.family_map[fid])}
                         insertables.append(family_object)
 
@@ -259,7 +270,7 @@ class GlobusPoller():
                         response = self.sqs_client.send_message_batch(QueueUrl=self.transferred_queue_url,
                                                                       Entries=insertables)
 
-                        print(f"Response for transferred queue: {response}")
+                        # print(f"Response for transferred queue: {response}")
                     time.sleep(2)
                 
             for gl_tid in gl_task_tmp_ls:
@@ -268,8 +279,8 @@ class GlobusPoller():
             if self.last_batch and self.transfer_check_queue.empty():
                 print("No more Transfer tasks and incoming queue empty")
                 exit()
-            print(f"Broke out of loop. Sleeping for 5 seconds...")
-            time.sleep(5)
+            # print(f"Broke out of loop. Sleeping for 5 seconds...")
+            # time.sleep(5)
 
 
 if __name__ == "__main__":
@@ -282,4 +293,6 @@ if __name__ == "__main__":
     print(f"Processing with crawl_id: {crawl_id}") 
     g = GlobusPoller(crawl_id)
     g.main_poller_loop()
+    # print("GETTING SIZE...") 
+    # g.get_size()
 
